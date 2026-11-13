@@ -1,0 +1,88 @@
+<Window x:Class="BrowserWall.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="BrowserWall"
+        Width="1280" Height="800"
+        WindowStartupLocation="Manual"
+        Background="#202020">
+    <Window.Resources>
+        <!-- Icon buttons in each cell's title bar: the built-in Windows icon font (no added images or packages),
+             flat with a transparent background, about the size of a Windows title bar button (46 wide, 30 high, set in code). -->
+        <Style x:Key="TitleIconButtonBase" TargetType="Button">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="#E0E0E0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- "Pop out": light background on hover. -->
+        <Style x:Key="TitleReleaseButton" TargetType="Button" BasedOn="{StaticResource TitleIconButtonBase}">
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#40FFFFFF" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#60FFFFFF" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <!-- ✕: red background and white glyph on hover, like a Windows close button. -->
+        <Style x:Key="TitleCloseButton" TargetType="Button" BasedOn="{StaticResource TitleIconButtonBase}">
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#E81123" />
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#F1707A" />
+                    <Setter Property="Foreground" Value="White" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+    <Grid>
+        <Grid.RowDefinitions>
+            <!-- Toolbar height equals MainWindow.ToolbarHeightDip -->
+            <RowDefinition Height="32" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <!-- Cells are placed in wall client coordinates, so the canvas covers the whole client area; the cells sit below the toolbar -->
+        <Canvas x:Name="CellCanvas" Grid.RowSpan="2" ClipToBounds="True" />
+        <!-- "No windows" and the config file location, when there are no managed windows but failed cells remain -->
+        <TextBlock x:Name="NoWindowText" Grid.Row="0"
+                   Foreground="#C0C0C0" FontSize="13"
+                   HorizontalAlignment="Left" VerticalAlignment="Center"
+                   Margin="8,0,360,0"
+                   TextTrimming="CharacterEllipsis"
+                   Visibility="Collapsed" />
+        <!-- Top right of the wall: "Add open window (N)" (hidden when N is 0) and "+ Add page" -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal"
+                    HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,8,0">
+            <Button x:Name="ExistingWindowButton"
+                    Margin="0,0,8,0" Padding="10,2"
+                    Visibility="Collapsed"
+                    Click="OnExistingWindowClick" />
+            <Button x:Name="AddWindowButton"
+                    Padding="10,2"
+                    Click="OnAddWindowClick" />
+        </StackPanel>
+        <TextBlock x:Name="StatusText" Grid.Row="1"
+                   Foreground="#C0C0C0"
+                   FontSize="16"
+                   TextAlignment="Center"
+                   TextWrapping="Wrap"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center" />
+    </Grid>
+</Window>
