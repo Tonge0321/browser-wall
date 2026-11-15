@@ -55,7 +55,7 @@ internal static class ConfigLoader
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 return new ConfigLoadResult(path, false, ConfigParseResult.Fail(
-                    new[] { new ConfigError(ConfigError.WholeFile, UiStrings.Format(autoLang, UiTextKey.ConfigCreateFailed, ex.Message)) },
+                    new[] { new ConfigError(ConfigError.WholeFile, ConfigFileFailure.Message(autoLang, true, ConfigFileFailure.Classify(ex))) },
                     autoLang));
             }
         }
@@ -68,7 +68,7 @@ internal static class ConfigLoader
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return new ConfigLoadResult(path, created, ConfigParseResult.Fail(
-                new[] { new ConfigError(ConfigError.WholeFile, UiStrings.Format(autoLang, UiTextKey.ConfigReadFailed, ex.Message)) },
+                new[] { new ConfigError(ConfigError.WholeFile, ConfigFileFailure.Message(autoLang, false, ConfigFileFailure.Classify(ex))) },
                 autoLang));
         }
 

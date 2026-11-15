@@ -40,9 +40,6 @@ public partial class MainWindow : Window
     /// <summary>How long after "Close" a window that still exists gets expanded.</summary>
     private static readonly TimeSpan CloseWait = TimeSpan.FromSeconds(2);
 
-    /// <summary>Maximum wait for taskbar calls to finish when the wall closes (exit must finish within 3 seconds).</summary>
-    private static readonly TimeSpan ExitTaskbarWait = TimeSpan.FromMilliseconds(500);
-
     private static readonly Brush CellBorderBrush = new SolidColorBrush(Color.FromRgb(0x60, 0x60, 0x60));
 
     /// <summary>Title bar height, button width and border of the latest layout (physical pixels), for the drag area check.</summary>
@@ -497,34 +494,47 @@ public partial class MainWindow : Window
             _state.FreeSlotCount,
             existingIds);
 
+        int added = 0;
+        int full = 0;
         foreach (DragOutDecision decision in _dragOut.Poll(snapshot))
         {
             if (decision.Kind == DragOutDecisionKind.Add)
             {
-                AutoAddExisting(decision.WindowId);
+                if (AutoAddExisting(decision.WindowId))
+                {
+                    added++;
+                }
             }
             else
             {
-                ShowFullNotice();
+                full++;
             }
+        }
+
+        // Adding does not change the mode or the expanded window, so this is the mode the user was in.
+        if (DragOutNotice.TextKey(DragOutNotice.Choose(_state.Mode == WallMode.Expanded, added, full)) is UiTextKey key)
+        {
+            ShowDragOutNotice(key);
         }
     }
 
     /// <summary>
     /// Adds a dragged-out window automatically: parking and taskbar handling do not wait for the other side (<see cref="ApplyMode.Deferred"/>),
     /// and the foreground, expansion and the expanded window are left alone. It starts without a URL and joins the list once a URL is recorded.
+    /// Returns whether the window was added.
     /// </summary>
-    private void AutoAddExisting(long id)
+    private bool AutoAddExisting(long id)
     {
         IReadOnlyList<WallAction> actions = _state.AutoAddWindow(id);
         if (actions.Count == 0)
         {
-            return;
+            return false;
         }
 
         _titles[id] = WindowSystem.GetTitle(new IntPtr(id));
         _thumbnails?.Register(id);
         Apply(actions, ApplyMode.Deferred);
+        return true;
     }
 
     /// <summary>
@@ -550,12 +560,15 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>"Wall is full" for 3 seconds; the dragged-out window stays where it is.</summary>
-    private void ShowFullNotice()
+    /// <summary>
+    /// The notice after dragged-out windows were handled, for 3 seconds: "wall is full" (the window stays where it is) or "new window added to the wall".
+    /// The notice window does not take focus and does not change the expanded window or the order of other windows.
+    /// </summary>
+    private void ShowDragOutNotice(UiTextKey key)
     {
         if (CurrentWallRect() is NativeMethods.RECT wall)
         {
-            _notice.ShowOver(wall, _scale);
+            _notice.ShowOver(wall, _scale, UiStrings.Get(_lang, key));
         }
     }
 
@@ -1754,15 +1767,14 @@ public partial class MainWindow : Window
         CellCanvas.Children.Add(grid);
     }
 
-    /// <summary>Maximum wait after sending close requests; windows still present are left for the user.</summary>
-    private static readonly TimeSpan ExitWait = TimeSpan.FromSeconds(2);
+    /// <summary>Wall area remembered when closing starts, used to put back windows that are still open.</summary>
+    private NativeMethods.RECT? _exitWall;
 
-    /// <summary>Interval for checking, while waiting, whether all managed windows have closed.</summary>
-    private static readonly TimeSpan ExitPoll = TimeSpan.FromMilliseconds(100);
+    /// <summary>Close requests the state machine returned when closing started.</summary>
+    private IReadOnlyList<WallAction> _exitCloseActions = Array.Empty<WallAction>();
 
     /// <summary>
-    /// Closing the wall. The first close is cancelled and the exit flow starts: remove thumbnails, send each managed window a "close window" request,
-    /// hide the wall; once all are closed or 2 seconds pass, move windows still present back to a visible position, add their taskbar buttons back, then exit (within 3 seconds).
+    /// Closing the wall. The first close is cancelled and the exit steps run in the order of <see cref="ExitSequence.Steps"/>.
     /// Operations on browser windows never wait for them to respond; no process is ever forcibly ended.
     /// </summary>
     private void OnClosing(object? sender, CancelEventArgs e)
@@ -1778,71 +1790,156 @@ public partial class MainWindow : Window
             return; // Exit flow in progress
         }
 
-        // While the wall is minimized, a minimized window's coordinates are not a visible position; use the last valid wall area. Taken first, since the wall is hidden afterwards.
-        NativeMethods.RECT? wall = CurrentWallRect();
-        _exitClock.Restart();
-        _closed = true;
-        _checkTimer.Stop();
-        _dragOutTimer.Stop();
-        _addressBar.Stop(); // Only sets the stop flag; does not wait for the background thread
-        _flat.Stop();
-        _notice.Shutdown();
-        _drag.Cancel();
-        _ghost.Close();
+        RunExit();
+    }
 
-        // Cancel deferred actions not yet run and the title bar button press check.
-        CancelDeferred();
-        _captionPoll.Stop();
-
-        if (_foregroundHook != IntPtr.Zero)
+    /// <summary>
+    /// Runs the exit steps in order. Steps before the window wait finish synchronously within <see cref="OnClosing"/>;
+    /// the waits do not block the UI thread, and the whole exit finishes within 3 seconds.
+    /// </summary>
+    private async void RunExit()
+    {
+        foreach (ExitStep step in ExitSequence.Steps)
         {
-            NativeMethods.UnhookWinEvent(_foregroundHook);
-            _foregroundHook = IntPtr.Zero;
+            await RunExitStep(step);
+        }
+    }
+
+    /// <summary>Does one exit step. Only the order list decides when each runs.</summary>
+    private Task RunExitStep(ExitStep step)
+    {
+        switch (step)
+        {
+            case ExitStep.CaptureWallArea:
+                // While the wall is minimized, a minimized window's coordinates are not a visible position; use the last valid wall area. Taken first, since the wall is hidden afterwards.
+                _exitWall = CurrentWallRect();
+                break;
+            case ExitStep.StartExitClock:
+                _exitClock.Restart();
+                break;
+            case ExitStep.MarkClosing:
+                _closed = true;
+                break;
+            case ExitStep.StopCheckTimer:
+                _checkTimer.Stop();
+                break;
+            case ExitStep.StopDragOutTimer:
+                _dragOutTimer.Stop();
+                break;
+            case ExitStep.StopAddressBar:
+                _addressBar.Stop(); // Only sets the stop flag; does not wait for the background thread
+                break;
+            case ExitStep.StopFlatCheck:
+                _flat.Stop();
+                break;
+            case ExitStep.CloseNotice:
+                _notice.Shutdown();
+                break;
+            case ExitStep.CancelDrag:
+                _drag.Cancel();
+                break;
+            case ExitStep.CloseDragGhost:
+                _ghost.Close();
+                break;
+            case ExitStep.CancelDeferred:
+                // Cancel deferred actions not yet run.
+                CancelDeferred();
+                break;
+            case ExitStep.StopCaptionPoll:
+                _captionPoll.Stop();
+                break;
+            case ExitStep.UnhookForeground:
+                if (_foregroundHook != IntPtr.Zero)
+                {
+                    NativeMethods.UnhookWinEvent(_foregroundHook);
+                    _foregroundHook = IntPtr.Zero;
+                }
+
+                break;
+            case ExitStep.RemoveThumbnails:
+                _thumbnails?.Dispose();
+                _thumbnails = null;
+                break;
+            case ExitStep.CloseShrinkButton:
+                _button.Close();
+                break;
+            case ExitStep.NotifySession:
+                // Windows closed together with the wall do not update the last page list.
+                _session.BeginExit();
+                break;
+            case ExitStep.NotifyState:
+                _exitCloseActions = _state.BeginExit();
+                break;
+            case ExitStep.SendCloseRequests:
+                foreach (WallAction action in _exitCloseActions)
+                {
+                    if (action.Kind == WallActionKind.CloseWindow)
+                    {
+                        WindowSystem.RequestClose(new IntPtr(action.WindowId!.Value));
+                    }
+                }
+
+                break;
+            case ExitStep.HideWall:
+                Hide();
+                break;
+            case ExitStep.WaitForWindows:
+                return WaitForWindowsAsync();
+            case ExitStep.ReleaseRemaining:
+                ReleaseRemainingOnExit();
+                break;
+            case ExitStep.WaitTaskbar:
+                // Taskbar calls run in the background; wait without blocking the UI thread.
+                return _taskbar.WhenIdle(ExitSequence.TaskbarWait);
+            case ExitStep.StopTaskbar:
+                _taskbar.Dispose();
+                break;
+            case ExitStep.WaitDiagnostics:
+                return WaitDiagnosticsOnExitAsync();
+            case ExitStep.MarkExitDone:
+                _exitDone = true;
+                break;
+            case ExitStep.Shutdown:
+                Application.Current.Shutdown();
+                break;
+            default:
+                throw new InvalidOperationException($"Unhandled exit step {step}.");
         }
 
-        _thumbnails?.Dispose();
-        _thumbnails = null;
-        _button.Close();
+        return Task.CompletedTask;
+    }
 
-        // Windows closed together with the wall do not update the last page list.
-        _session.BeginExit();
-        foreach (WallAction action in _state.BeginExit())
-        {
-            if (action.Kind == WallActionKind.CloseWindow)
-            {
-                WindowSystem.RequestClose(new IntPtr(action.WindowId!.Value));
-            }
-        }
-
-        Hide();
-
+    /// <summary>
+    /// Completes at once with no managed windows; otherwise checks every <see cref="ExitSequence.WindowClosePoll"/> and completes
+    /// when all are closed or <see cref="ExitSequence.WindowCloseWait"/> has passed. Windows still present are left for the user.
+    /// </summary>
+    private Task WaitForWindowsAsync()
+    {
         if (_state.WindowIds.Count == 0)
         {
-            FinishExit(wall);
-            return;
+            return Task.CompletedTask;
         }
 
+        var done = new TaskCompletionSource();
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        var timer = new DispatcherTimer { Interval = ExitPoll };
+        var timer = new DispatcherTimer { Interval = ExitSequence.WindowClosePoll };
         timer.Tick += (_, _) =>
         {
             bool anyAlive = _state.WindowIds.Any(id => NativeMethods.IsWindow(new IntPtr(id)));
-            if (anyAlive && clock.Elapsed < ExitWait)
+            if (anyAlive && clock.Elapsed < ExitSequence.WindowCloseWait)
             {
                 return;
             }
 
             timer.Stop();
-            FinishExit(wall);
+            done.TrySetResult();
         };
         timer.Start();
+        return done.Task;
     }
 
-    /// <summary>
-    /// Moves managed windows still present back to a visible position on the wall area, adds their taskbar buttons back, then exits.
-    /// Taskbar calls run in the background; waits at most <see cref="ExitTaskbarWait"/> more (without blocking the UI thread), so exit finishes within 3 seconds.
-    /// </summary>
-    private async void FinishExit(NativeMethods.RECT? wall)
+    /// <summary>Moves managed windows still present back to a visible position on the wall area and adds their taskbar buttons back.</summary>
+    private void ReleaseRemainingOnExit()
     {
         var alive = _state.WindowIds.Where(id => NativeMethods.IsWindow(new IntPtr(id))).ToList();
         foreach (WallAction action in _state.FinishExit(alive))
@@ -1850,16 +1947,18 @@ public partial class MainWindow : Window
             if (action.Kind == WallActionKind.ReleaseOnExit)
             {
                 long id = action.WindowId!.Value;
-                WindowSystem.ReleaseOnExitAsync(new IntPtr(id), wall);
+                WindowSystem.ReleaseOnExitAsync(new IntPtr(id), _exitWall);
                 _taskbar.Show(id, CellOf(id));
             }
         }
+    }
 
-        await _taskbar.WhenIdle(ExitTaskbarWait);
-        _taskbar.Dispose();
-
-        // Before closing, let queued diagnostics lines reach the file: at most 500 ms, and the whole exit stays within 3 seconds.
-        // If the wait itself fails, exit as usual.
+    /// <summary>
+    /// Before closing, lets queued diagnostics lines reach the file: at most 500 ms, and the whole exit stays within 3 seconds.
+    /// If the wait itself fails, exit as usual.
+    /// </summary>
+    private async Task WaitDiagnosticsOnExitAsync()
+    {
         try
         {
             await _diagnostics.WhenFlushed(ExitBudget.LogFlushWait(_exitClock.Elapsed));
@@ -1867,9 +1966,6 @@ public partial class MainWindow : Window
         catch (ArgumentOutOfRangeException)
         {
         }
-
-        _exitDone = true;
-        Application.Current.Shutdown();
     }
 
     /// <summary>

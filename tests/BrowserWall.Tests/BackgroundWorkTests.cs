@@ -458,21 +458,38 @@ public class BackgroundWorkTests
         TimeSpan shortTimeout = TimeSpan.FromMilliseconds(20);
         using var worker = new BoundedWorker(shortTimeout, concurrency: 1, maxAbandoned: 1, onStuckCap: caps.Enqueue);
         int cycles = 0;
+        int expiredBeforeStart = 0;
+        int attempt = 0;
         var sw = Stopwatch.StartNew();
         while (cycles < 30 && sw.Elapsed < TimeSpan.FromSeconds(10))
         {
             // Each item returns slightly after its deadline: timeout → cap reached, then it returns → resumed.
-            WorkOutcome outcome = await worker.Post($"c{cycles}", () => Thread.Sleep(25));
+            int started = 0;
+            WorkOutcome outcome = await worker.Post($"c{attempt++}", () =>
+            {
+                Volatile.Write(ref started, 1);
+                Thread.Sleep(25);
+            });
+            Assert.True(await WaitUntil(() => !worker.IsAtStuckCap, TimeSpan.FromSeconds(2)));
+
+            // A busy machine can let an item expire while still queued: no thread was abandoned, so no notice is expected.
+            // Read the flag only after the resume: an abandoned item always runs its action before its thread returns.
             if (outcome == WorkOutcome.TimedOut)
             {
-                cycles++;
+                if (Volatile.Read(ref started) == 1)
+                {
+                    cycles++;
+                }
+                else
+                {
+                    expiredBeforeStart++;
+                }
             }
-
-            Assert.True(await WaitUntil(() => !worker.IsAtStuckCap, TimeSpan.FromSeconds(2)));
         }
 
         Assert.True(cycles > 0);
-        Assert.True(await WaitUntil(() => caps.Count == 2 * cycles, TimeSpan.FromSeconds(2)), $"{caps.Count} notifications, expected {2 * cycles}");
+        Assert.True(await WaitUntil(() => caps.Count == 2 * cycles, TimeSpan.FromSeconds(2)),
+            $"{caps.Count} notifications, expected {2 * cycles} ({expiredBeforeStart} expired before start)");
         bool[] seen = caps.ToArray();
         for (int i = 0; i < seen.Length; i++)
         {

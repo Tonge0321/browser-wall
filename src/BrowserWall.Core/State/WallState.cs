@@ -49,7 +49,7 @@ public sealed class WallState
     /// Whether a dragged-out window can be auto-added now: not exiting, wall not minimized, no restore pending.
     /// When not, the dragged-out window keeps waiting and is not given up.
     /// </summary>
-    public bool CanAutoAdd => !IsExiting && !IsWallMinimized && !RestorePending;
+    public bool CanAutoAdd => IsAllowed(WallOp.AutoAddWindow);
 
     /// <summary>
     /// Whether the wall has any managed-window cell. When not, the wall shows "no windows" and the config file location;
@@ -61,32 +61,148 @@ public sealed class WallState
     /// Whether the wall is minimized. While minimized, <see cref="Mode"/> and <see cref="ExpandedWindowId"/> keep their values from
     /// before minimizing, as the mode to return to on restore.
     /// </summary>
-    public bool IsWallMinimized { get; private set; }
+    public bool IsWallMinimized => _phase is WallPhase.Minimized or WallPhase.ExitingMinimized;
 
     /// <summary>
-    /// The wall is closing. While exiting, every method except <see cref="FinishExit"/> does nothing and changes no state.
+    /// The wall is closing. While exiting, every method except <see cref="FinishExit"/> does nothing and changes no state
+    /// (handling a cell close that is still open after 2 seconds, <see cref="CloseStillOpen"/>, still moves it to the expand queue).
     /// </summary>
-    public bool IsExiting { get; private set; }
+    public bool IsExiting => _phase is WallPhase.Exiting or WallPhase.ExitingMinimized;
 
     /// <summary>
     /// The wall was restored from minimized and the managed windows' restore actions have not run yet (they are deferred).
     /// Meanwhile the wall becoming active does not count as shrinking, minimized managed windows are not restored automatically,
     /// and cell clicks are ignored; <see cref="SettleRestore"/> ends it.
     /// </summary>
-    public bool RestorePending { get; private set; }
+    public bool RestorePending => _phase == WallPhase.RestorePending;
 
     /// <summary>
     /// The user is pressing the wall's title bar minimize or close button. Meanwhile there is no shrinking and deferred actions do not run;
     /// it ends with a real minimize (<see cref="WallMinimized"/>), a real close (<see cref="BeginExit"/>) or <see cref="CaptionPressEnded"/>.
     /// </summary>
-    public bool CaptionPressPending { get; private set; }
+    public bool CaptionPressPending => _captionPress;
 
     /// <summary>
     /// A deferred park scheduled after the wall became active has not run yet. Meanwhile moving or resizing the wall does not park
     /// synchronously; it joins the deferred park (<see cref="WallResized"/>). Ended by <see cref="DeferredParkTargets"/>,
     /// <see cref="WallMinimized"/> or <see cref="BeginExit"/>.
     /// </summary>
-    public bool ActivationParkPending { get; private set; }
+    public bool ActivationParkPending => _phase == WallPhase.ActivationParkPending;
+
+    /// <summary>The wall's phase. The properties above are derived from it (and from the title bar button press mark).</summary>
+    public WallPhase Phase => _phase;
+
+    /// <summary>The only phase field.</summary>
+    private WallPhase _phase = WallPhase.Normal;
+
+    /// <summary>
+    /// The title bar minimize or close button is pressed. Kept apart from the phase because it can hold together with
+    /// <see cref="WallPhase.Normal"/>, <see cref="WallPhase.ActivationParkPending"/> and <see cref="WallPhase.RestorePending"/>.
+    /// </summary>
+    private bool _captionPress;
+
+    /// <summary>Public operations whose permission depends on the phase.</summary>
+    private enum WallOp
+    {
+        CloseCell,
+        CloseStillOpen,
+        ExpandTimedOutClose,
+        ExpandNewWindow,
+        SetWindowUrl,
+        BeginExit,
+        FinishExit,
+        AddWindow,
+        AdoptWindow,
+        AutoAddWindow,
+        SwapCells,
+        ReleaseWindow,
+        WallMinimized,
+        WallRestored,
+        SettleRestore,
+        DeferredParkTargets,
+        CaptionPressStarted,
+        CaptionPressEnded,
+        AddFailed,
+        ReleaseFailed,
+        WallActivated,
+        WallActivatedShrink,
+        ClickCell,
+        Shrink,
+        WindowClosed,
+        SyncAlive,
+        WindowMinimized,
+        WallResized,
+    }
+
+    /// <summary>Sets of phases, one bit per <see cref="WallPhase"/>.</summary>
+    [Flags]
+    private enum Phases
+    {
+        Normal = 1 << (int)WallPhase.Normal,
+        ActivationParkPending = 1 << (int)WallPhase.ActivationParkPending,
+        RestorePending = 1 << (int)WallPhase.RestorePending,
+        Minimized = 1 << (int)WallPhase.Minimized,
+        Exiting = 1 << (int)WallPhase.Exiting,
+        ExitingMinimized = 1 << (int)WallPhase.ExitingMinimized,
+
+        /// <summary>Normal or activation park pending.</summary>
+        Active = Normal | ActivationParkPending,
+
+        /// <summary>Not minimized and not exiting.</summary>
+        Awake = Active | RestorePending,
+
+        /// <summary>Not exiting.</summary>
+        NotExiting = Awake | Minimized,
+
+        /// <summary>Exiting, minimized or not.</summary>
+        Closing = Exiting | ExitingMinimized,
+
+        All = NotExiting | Closing,
+    }
+
+    /// <summary>
+    /// The one place that says in which phases each operation is allowed, and whether a title bar button press blocks it.
+    /// Conditions on arguments or the mode stay in each method.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<WallOp, (Phases Phases, bool BlockedByCaptionPress)> Allowed =
+        new Dictionary<WallOp, (Phases, bool)>
+        {
+            [WallOp.CloseCell] = (Phases.Active, false),
+            [WallOp.CloseStillOpen] = (Phases.All, false),
+            [WallOp.ExpandTimedOutClose] = (Phases.Active, true),
+            [WallOp.ExpandNewWindow] = (Phases.Active, true),
+            [WallOp.SetWindowUrl] = (Phases.NotExiting, false),
+            [WallOp.BeginExit] = (Phases.NotExiting, false),
+            [WallOp.FinishExit] = (Phases.Closing, false),
+            [WallOp.AddWindow] = (Phases.NotExiting, false),
+            [WallOp.AdoptWindow] = (Phases.Awake, false),
+            [WallOp.AutoAddWindow] = (Phases.Active, false),
+            [WallOp.SwapCells] = (Phases.Active, false),
+            [WallOp.ReleaseWindow] = (Phases.Awake, false),
+            [WallOp.WallMinimized] = (Phases.Awake, false),
+            [WallOp.WallRestored] = (Phases.Minimized, false),
+            [WallOp.SettleRestore] = (Phases.RestorePending, true),
+            [WallOp.DeferredParkTargets] = (Phases.Awake, false),
+            [WallOp.CaptionPressStarted] = (Phases.Awake, false),
+            [WallOp.CaptionPressEnded] = (Phases.Awake, false),
+            [WallOp.AddFailed] = (Phases.NotExiting, false),
+            [WallOp.ReleaseFailed] = (Phases.Awake, false),
+            [WallOp.WallActivated] = (Phases.Awake, false),
+            [WallOp.WallActivatedShrink] = (Phases.Active, false),
+            [WallOp.ClickCell] = (Phases.Active, false),
+            [WallOp.Shrink] = (Phases.Awake, false),
+            [WallOp.WindowClosed] = (Phases.NotExiting, false),
+            [WallOp.SyncAlive] = (Phases.NotExiting, false),
+            [WallOp.WindowMinimized] = (Phases.Active, false),
+            [WallOp.WallResized] = (Phases.Awake, false),
+        };
+
+    /// <summary>Whether <paramref name="op"/> is allowed in the current phase (and title bar button press state).</summary>
+    private bool IsAllowed(WallOp op)
+    {
+        (Phases phases, bool blockedByCaptionPress) = Allowed[op];
+        return (phases & (Phases)(1 << (int)_phase)) != 0 && !(blockedByCaptionPress && _captionPress);
+    }
 
     /// <summary>Managed windows that were sent a close request (the managed windows at <see cref="BeginExit"/>); cleared after <see cref="FinishExit"/>.</summary>
     private List<long>? _closeRequested;
@@ -108,9 +224,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> CloseCell(long windowId)
     {
-        if (IsExiting
-            || IsWallMinimized
-            || RestorePending
+        if (!IsAllowed(WallOp.CloseCell)
             || Mode != WallMode.Grid
             || IndexOfWindow(windowId) < 0
             || _cellCloseSent.Contains(windowId)
@@ -129,7 +243,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> CloseStillOpen(long windowId)
     {
-        if (!_cellCloseSent.Remove(windowId) || IndexOfWindow(windowId) < 0)
+        if (!IsAllowed(WallOp.CloseStillOpen) || !_cellCloseSent.Remove(windowId) || IndexOfWindow(windowId) < 0)
         {
             return None;
         }
@@ -157,10 +271,7 @@ public sealed class WallState
         }
 
         if (_closeExpandQueue.Count == 0
-            || IsExiting
-            || IsWallMinimized
-            || RestorePending
-            || CaptionPressPending
+            || !IsAllowed(WallOp.ExpandTimedOutClose)
             || _closeExpandedId is not null)
         {
             return None;
@@ -202,11 +313,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> ExpandNewWindow(long windowId)
     {
-        if (IsExiting
-            || IsWallMinimized
-            || RestorePending
-            || CaptionPressPending
-            || IndexOfWindow(windowId) < 0)
+        if (!IsAllowed(WallOp.ExpandNewWindow) || IndexOfWindow(windowId) < 0)
         {
             return None;
         }
@@ -235,7 +342,7 @@ public sealed class WallState
     {
         ArgumentNullException.ThrowIfNull(url);
         int index = IndexOfWindow(windowId);
-        if (IsExiting || index < 0 || string.Equals(_slots[index].Url, url, StringComparison.Ordinal))
+        if (!IsAllowed(WallOp.SetWindowUrl) || index < 0 || string.Equals(_slots[index].Url, url, StringComparison.Ordinal))
         {
             return false;
         }
@@ -250,15 +357,14 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> BeginExit()
     {
-        if (IsExiting)
+        if (!IsAllowed(WallOp.BeginExit))
         {
             return None;
         }
 
-        IsExiting = true;
-        RestorePending = false;
-        CaptionPressPending = false;
-        ActivationParkPending = false;
+        // Closing while minimized still counts as minimized; pending restore, activation park and title bar press all end.
+        _phase = IsWallMinimized ? WallPhase.ExitingMinimized : WallPhase.Exiting;
+        _captionPress = false;
         _closeRequested = WindowIds.ToList();
         return _closeRequested.Select(WallAction.CloseWindow).ToList();
     }
@@ -270,7 +376,7 @@ public sealed class WallState
     public IReadOnlyList<WallAction> FinishExit(IEnumerable<long> aliveIds)
     {
         ArgumentNullException.ThrowIfNull(aliveIds);
-        if (!IsExiting || _closeRequested is null)
+        if (!IsAllowed(WallOp.FinishExit) || _closeRequested is null)
         {
             return None;
         }
@@ -289,7 +395,7 @@ public sealed class WallState
     public IReadOnlyList<WallAction> AddWindow(long windowId, string url, int? sessionEntry = null)
     {
         ArgumentNullException.ThrowIfNull(url);
-        if (IsExiting)
+        if (!IsAllowed(WallOp.AddWindow))
         {
             return None;
         }
@@ -312,8 +418,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> AdoptWindow(long windowId)
     {
-        if (IsExiting
-            || IsWallMinimized
+        if (!IsAllowed(WallOp.AdoptWindow)
             || Mode == WallMode.Expanded
             || IndexOfWindow(windowId) >= 0
             || !HasFreeSlot)
@@ -333,7 +438,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> AutoAddWindow(long windowId)
     {
-        if (!CanAutoAdd || IndexOfWindow(windowId) >= 0 || !HasFreeSlot)
+        if (!IsAllowed(WallOp.AutoAddWindow) || IndexOfWindow(windowId) >= 0 || !HasFreeSlot)
         {
             return None;
         }
@@ -349,9 +454,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> SwapCells(int from, int to)
     {
-        if (IsExiting
-            || IsWallMinimized
-            || RestorePending
+        if (!IsAllowed(WallOp.SwapCells)
             || Mode != WallMode.Grid
             || from < 0
             || from >= _slots.Count
@@ -371,7 +474,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> ReleaseWindow(long windowId)
     {
-        if (IsExiting || IsWallMinimized || ExpandedWindowId == windowId || IndexOfWindow(windowId) < 0)
+        if (!IsAllowed(WallOp.ReleaseWindow) || ExpandedWindowId == windowId || IndexOfWindow(windowId) < 0)
         {
             return None;
         }
@@ -385,17 +488,15 @@ public sealed class WallState
     /// <summary>The wall was minimized: all managed windows are minimized with it and the "back to grid" button is hidden.</summary>
     public IReadOnlyList<WallAction> WallMinimized()
     {
-        if (IsExiting || IsWallMinimized)
+        if (!IsAllowed(WallOp.WallMinimized))
         {
             return None;
         }
 
-        IsWallMinimized = true;
-
-        // A real minimize: the pending restore is cancelled and the title bar button press ends. The mode is kept as the mode to return to.
-        RestorePending = false;
-        CaptionPressPending = false;
-        ActivationParkPending = false;
+        // A real minimize: the pending restore or activation park is cancelled and the title bar button press ends.
+        // The mode is kept as the mode to return to.
+        _phase = WallPhase.Minimized;
+        _captionPress = false;
         var actions = WindowIds.Select(WallAction.Minimize).ToList();
         if (Mode == WallMode.Expanded)
         {
@@ -413,18 +514,18 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> WallRestored()
     {
-        if (IsExiting || !IsWallMinimized)
+        if (!IsAllowed(WallOp.WallRestored))
         {
             return None;
         }
 
-        IsWallMinimized = false;
         if (Mode == WallMode.Empty)
         {
+            _phase = WallPhase.Normal;
             return new[] { WallAction.ShowEmpty };
         }
 
-        RestorePending = true;
+        _phase = WallPhase.RestorePending;
         return RestoreActions();
     }
 
@@ -435,12 +536,12 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> SettleRestore()
     {
-        if (!RestorePending || CaptionPressPending || IsExiting || IsWallMinimized)
+        if (!IsAllowed(WallOp.SettleRestore))
         {
             return None;
         }
 
-        RestorePending = false;
+        _phase = WallPhase.Normal;
         return Mode == WallMode.Empty ? new[] { WallAction.ShowEmpty } : RestoreActions();
     }
 
@@ -451,8 +552,12 @@ public sealed class WallState
     public IReadOnlyList<long> DeferredParkTargets(IEnumerable<long> scheduled)
     {
         ArgumentNullException.ThrowIfNull(scheduled);
-        ActivationParkPending = false;
-        if (IsExiting || IsWallMinimized)
+        if (_phase == WallPhase.ActivationParkPending)
+        {
+            _phase = WallPhase.Normal;
+        }
+
+        if (!IsAllowed(WallOp.DeferredParkTargets))
         {
             return Array.Empty<long>();
         }
@@ -467,9 +572,9 @@ public sealed class WallState
     /// </summary>
     public void CaptionPressStarted()
     {
-        if (!IsExiting && !IsWallMinimized && Mode != WallMode.Empty)
+        if (IsAllowed(WallOp.CaptionPressStarted) && Mode != WallMode.Empty)
         {
-            CaptionPressPending = true;
+            _captionPress = true;
         }
     }
 
@@ -482,13 +587,13 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> CaptionPressEnded(bool wallStillActive)
     {
-        if (!CaptionPressPending)
+        if (!_captionPress)
         {
             return None;
         }
 
-        CaptionPressPending = false;
-        if (!wallStillActive || IsExiting || IsWallMinimized)
+        _captionPress = false;
+        if (!wallStillActive || !IsAllowed(WallOp.CaptionPressEnded))
         {
             return None;
         }
@@ -534,7 +639,7 @@ public sealed class WallState
     public IReadOnlyList<WallAction> AddFailed(string url, int? sessionEntry = null)
     {
         ArgumentNullException.ThrowIfNull(url);
-        if (IsExiting)
+        if (!IsAllowed(WallOp.AddFailed))
         {
             return None;
         }
@@ -550,8 +655,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> ReleaseFailed(int index)
     {
-        if (IsExiting
-            || IsWallMinimized
+        if (!IsAllowed(WallOp.ReleaseFailed)
             || Mode != WallMode.Grid
             || index < 0
             || index >= _slots.Count
@@ -579,7 +683,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> WallActivated(bool captionButton = false)
     {
-        if (IsExiting || IsWallMinimized)
+        if (!IsAllowed(WallOp.WallActivated))
         {
             return None;
         }
@@ -590,7 +694,7 @@ public sealed class WallState
             return None;
         }
 
-        if (RestorePending)
+        if (!IsAllowed(WallOp.WallActivatedShrink))
         {
             return None;
         }
@@ -600,14 +704,18 @@ public sealed class WallState
             long id = ExpandedWindowId!.Value;
             Mode = WallMode.Grid;
             ExpandedWindowId = null;
-            ActivationParkPending = true;
+            _phase = WallPhase.ActivationParkPending;
             return new[] { WallAction.HideShrinkButton, WallAction.ParkDeferred(id) };
         }
 
         if (Mode == WallMode.Grid)
         {
             List<WallAction> parks = ParkedWindowIds.Select(WallAction.ParkDeferred).ToList();
-            ActivationParkPending |= parks.Count > 0;
+            if (parks.Count > 0)
+            {
+                _phase = WallPhase.ActivationParkPending;
+            }
+
             return parks;
         }
 
@@ -618,7 +726,7 @@ public sealed class WallState
     /// <remarks>Ignored while a restore is pending (the managed windows are still minimized).</remarks>
     public IReadOnlyList<WallAction> ClickCell(int index)
     {
-        if (IsExiting || IsWallMinimized || RestorePending || Mode != WallMode.Grid || index < 0 || index >= _slots.Count)
+        if (!IsAllowed(WallOp.ClickCell) || Mode != WallMode.Grid || index < 0 || index >= _slots.Count)
         {
             return None;
         }
@@ -638,7 +746,7 @@ public sealed class WallState
     /// <summary>Shrink (the "back to grid" button).</summary>
     public IReadOnlyList<WallAction> Shrink()
     {
-        if (IsExiting || IsWallMinimized || Mode != WallMode.Expanded)
+        if (!IsAllowed(WallOp.Shrink) || Mode != WallMode.Expanded)
         {
             return None;
         }
@@ -652,7 +760,7 @@ public sealed class WallState
     /// <summary>A managed window was closed by the user.</summary>
     public IReadOnlyList<WallAction> WindowClosed(long windowId)
     {
-        if (IsExiting)
+        if (!IsAllowed(WallOp.WindowClosed))
         {
             return None;
         }
@@ -674,7 +782,7 @@ public sealed class WallState
     public IReadOnlyList<WallAction> SyncAlive(IEnumerable<long> aliveIds)
     {
         ArgumentNullException.ThrowIfNull(aliveIds);
-        if (IsExiting)
+        if (!IsAllowed(WallOp.SyncAlive))
         {
             return None;
         }
@@ -707,7 +815,7 @@ public sealed class WallState
     public IReadOnlyList<WallAction> WindowMinimized(long windowId)
     {
         // While a restore is pending the managed windows are still minimized anyway; the user did not minimize them.
-        if (IsExiting || IsWallMinimized || RestorePending || IndexOfWindow(windowId) < 0)
+        if (!IsAllowed(WallOp.WindowMinimized) || IndexOfWindow(windowId) < 0)
         {
             return None;
         }
@@ -727,7 +835,7 @@ public sealed class WallState
     /// </summary>
     public IReadOnlyList<WallAction> WallResized()
     {
-        if (IsExiting || IsWallMinimized)
+        if (!IsAllowed(WallOp.WallResized))
         {
             return None;
         }
@@ -748,7 +856,11 @@ public sealed class WallState
         if (ActivationParkPending || CaptionPressPending)
         {
             var deferredActions = ParkedWindowIds.Select(WallAction.ParkDeferred).ToList();
-            ActivationParkPending |= deferredActions.Count > 0;
+            if (deferredActions.Count > 0)
+            {
+                _phase = WallPhase.ActivationParkPending;
+            }
+
             if (Mode == WallMode.Expanded && !CaptionPressPending)
             {
                 // After shrinking the user clicked a cell to expand again: expanding is a normal operation and is adjusted to the new wall area as usual.

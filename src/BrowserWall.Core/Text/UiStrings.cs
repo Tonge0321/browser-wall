@@ -43,6 +43,9 @@ public enum UiTextKey
     UrlMustStartWithHttp,
     ConfigLanguageInvalid,
     SessionInvalid,
+    DragOutAdded,
+    ConfigNoAccess,
+    ConfigFileBusy,
 }
 
 /// <summary>
@@ -100,6 +103,11 @@ public static class UiStrings
         [UiTextKey.UrlMustStartWithHttp] = ("必須以 http:// 或 https:// 開頭：{0}", "Must start with http:// or https://: {0}"),
         [UiTextKey.ConfigLanguageInvalid] = ("只能是 \"auto\"、\"zh-TW\" 或 \"en\"", "Must be \"auto\", \"zh-TW\" or \"en\""),
         [UiTextKey.SessionInvalid] = ("上次的網頁清單無法讀取，已改用設定檔", "Could not read the last page list; using the config file instead"),
+        [UiTextKey.DragOutAdded] = ("新視窗已加入牆", "New window added to the wall"),
+        [UiTextKey.ConfigNoAccess] = ("沒有存取權限", "Access denied"),
+        [UiTextKey.ConfigFileBusy] = (
+            "檔案無法讀寫（可能正被其他程式使用）",
+            "The file cannot be read or written (it may be in use by another program)"),
     };
 
     /// <summary>Key → (Traditional Chinese, English). Format strings: literal braces are doubled.</summary>

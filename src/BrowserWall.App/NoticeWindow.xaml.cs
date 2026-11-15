@@ -6,7 +6,7 @@ using BrowserWall.Core.Text;
 namespace BrowserWall.App;
 
 /// <summary>
-/// The "wall is full" and "could not add page" notice: this program's own small window, shown centered at the top of the wall for 3 seconds.
+/// The "wall is full", "new window added to the wall" and "could not add page" notice: this program's own small window, shown centered at the top of the wall for 3 seconds.
 /// Visible in grid and expanded mode: placed in front through SetWindowPos's insert-after position (in expanded mode above the
 /// "Back to grid" button, without breaking the button → expanded window → wall adjacency), not through the topmost attribute.
 /// It does not take focus, does not appear on the taskbar, and does not touch other programs' windows.

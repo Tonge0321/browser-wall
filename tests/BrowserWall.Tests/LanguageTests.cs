@@ -233,9 +233,10 @@ public class LanguageTests
             Assert.Equal(text, UiStrings.Format(UiLanguage.ZhTw, key, args));
         }
 
-        // Every key except the newly added "language" error is checked.
+        // Every key except those added after version 8 (the "language" error, the drag-out added notice and the config file failure explanations) is checked.
+        var addedAfterVersion8 = new[] { UiTextKey.ConfigLanguageInvalid, UiTextKey.DragOutAdded, UiTextKey.ConfigNoAccess, UiTextKey.ConfigFileBusy };
         Assert.Equal(
-            Enum.GetValues<UiTextKey>().Where(k => k != UiTextKey.ConfigLanguageInvalid).OrderBy(k => k),
+            Enum.GetValues<UiTextKey>().Where(k => !addedAfterVersion8.Contains(k)).OrderBy(k => k),
             expected.Select(e => e.Key).OrderBy(k => k));
     }
 

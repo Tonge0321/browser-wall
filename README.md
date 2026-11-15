@@ -62,7 +62,7 @@ The file is `%LOCALAPPDATA%\BrowserWall\config.json`. If it is missing on first 
 | `language` | `auto`, `en` or `zh-TW`. Optional; defaults to `auto`, which picks Traditional Chinese when the Windows display language is Chinese and English otherwise. |
 | `urls` | 1 to 16 addresses, each starting with `http://` or `https://`. Required. When a saved page list exists, the wall opens that list instead. |
 
-If the file has an error, the app names the field and the problem, then exits without changing your file.
+If the file has an error, the app names the field and the problem, then exits without changing your file. If the file can't be read at all (no permission, or another program has it open), it says so in the interface language.
 
 The wall uses its own browser data folder and leaves your everyday Chrome profile alone. You will need to sign in to sites once inside the wall; after that the browser remembers you.
 
@@ -74,7 +74,7 @@ The wall uses its own browser data folder and leaves your everyday Chrome profil
 4. ✕ closes that browser window. The tile disappears and won't reopen next time. If the page asks "Leave site?" or similar, the tile expands after 2 seconds so you can answer.
 5. Pop out moves the browser off the wall to the middle of the screen, and it shows on the taskbar again.
 6. Pop-ups opened by a page and windows opened with Ctrl+N are not added automatically. A button "Add open window (N)" appears at the top right of the wall; click it and pick a window. Popped-out windows can be put back the same way.
-7. If you drag a tab out while a tile is expanded, the expanded page stays in front. The new tile shows up after you go back to the grid.
+7. If you drag a tab out while a tile is expanded, the expanded page stays in front and "New window added to the wall" shows at the top for 3 seconds. The new tile shows up after you go back to the grid.
 8. The wall's minimize button, or clicking the wall on the taskbar while it is in front, sends the wall and all its browsers to the taskbar. Click again to bring everything back.
 9. Closing the wall closes its browsers, and the app exits within 3 seconds. If the wall was killed last time, the next launch first closes the browser windows left behind.
 
@@ -102,7 +102,8 @@ The wall needs to read full URLs (with `https://` and `www.`), so it turns on Ch
 - A new tab with no address typed has nothing to remember, so it won't come back next time.
 - With 12 or more tiles that all redraw constantly, the wall gets less smooth: about 42 to 46 frames per second at 12 tiles, about 25 at 16. Ordinary pages don't redraw all the time.
 - Only Chrome has been tested. Brave has not.
-- When the config file can't be read at all, the system's own error text is shown as is, so it may not match the interface language.
+- If writing the default config file fails partway on first run, the error may say the JSON is invalid instead of reporting a write failure.
+- One timing test (`Taskbar_TimeoutDoesNotBlockExit`) can fail on a heavily loaded machine, about 8 runs in 20 with all cores busy. It assumes background work starts within 20 ms.
 
 ## Code layout
 
